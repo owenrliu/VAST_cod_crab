@@ -1,0 +1,104 @@
+---
+title: "Distribution vs. Diet Comparison"
+author: "Owen Liu"
+date: "1/22/2020"
+output: html_document
+---
+
+## Purpose
+
+Compare outputs of Owen's distributional analysis for cod and crab and Arnaud's predator-expanded stomach contents data.
+
+```{r}
+library(tidyverse)
+library(here)
+library(magrittr)
+library(sf)
+
+ak <- read_sf(here::here('data','spatial','cb_2017_02_anrc_500k.shp')) %>% 
+  st_union() %>% 
+  st_transform(26904)
+
+# ggplot theme
+plot_theme <-   theme_minimal()+
+  theme(text=element_text(family="sans",size=12,color="black"),
+        legend.text = element_text(size=14),
+        axis.title=element_text(family="sans",size=14,color="black"),
+        # axis.text=element_blank(),
+        axis.text=element_text(family="sans",size=8,color="black"),
+        panel.grid.major = element_blank(),
+        panel.border=element_rect(color='black',fill=NA))
+theme_set(plot_theme)
+
+rm(list=ls())
+load(here::here('data','processed','PESCs_PCod.RData'))
+pesc <- Save
+
+load(here::here('data','VAST output','Save.RData'))
+load(here::here('data','Vast output','plots','derived_quantities.Rdata'))
+
+owen <- Save
+
+rm(Save)
+
+x <- pesc$PESC_Knots
+y <- log(owen$Report$D_gcy)
+```
+
+## Convert to long form and compare
+
+```{r}
+x %<>% mutate(knot=row_number()) %>% 
+  pivot_longer(names_to='year',values_to = 'stomach_contents',1:31) %>% 
+  mutate(year=as.numeric(year))
+
+owen_yrs <- sort(unique(owen$Data$Year))
+cat_names <- tools::toTitleCase(levels(owen$Data$spp))
+z <- purrr::map_df(1:length(owen_yrs),function(yr) {
+  y[,,yr] %>% as_tibble() %>% set_names(cat_names) %>% mutate(knot=row_number()) %>% mutate(year=owen_yrs[yr])
+})
+
+z %<>% filter(year %in% unique(x$year))
+
+combined_dat <- x %>% left_join(z,by = c("knot", "year"))
+glimpse(combined_dat)
+
+cor(combined_dat %>% select(stomach_contents:`Large Cod`))
+```
+
+## Plot PESC
+
+```{r}
+Extrapolation_List <- read_rds(here::here('data','VAST output',"Extrapolation_List.rds"))
+Spatial_List <- read_rds(here::here('data','VAST output',"Spatial_List.rds"))
+
+pts <- Extrapolation_List$Data_Extrap[,c('Lon','Lat','Area_in_survey_km2')] %>% 
+  st_as_sf(coords=c('Lon','Lat'),crs=4326) %>% 
+  #convert to AK UTM zone
+  st_transform(26904)
+pts[,c("E_km","N_km")] <- st_coordinates(pts)
+pts$idx <-as.integer(Spatial_List$PolygonList$NN_Extrap$nn.idx)
+pts <- filter(pts,Area_in_survey_km2>0) %>% select(-Area_in_survey_km2)
+lims <- st_bbox(pts)
+st_geometry(pts) <- NULL
+knots <- 300
+
+sp_df<-pts %>% left_join(x,by=c('idx'='knot'))
+
+# make the facetted plot by year
+cols<-colorRampPalette(colors=c("darkblue","blue","lightblue","lightgreen","yellow","orange","red"))(50)
+out<-ggplot()+
+  geom_point(data=sp_df,aes(E_km,N_km,col=log(stomach_contents)),size=0.25)+
+  scale_color_gradientn(colors=cols)+
+  facet_wrap(~year)+
+  labs(title="PESC",x="Eastings",y="Northings",col="")+
+  geom_sf(data=ak,fill='gray50',col=NA)+
+  coord_sf(crs = st_crs(ak), datum = NA) +
+  xlim(lims[1],lims[3])+ylim(lims[2],lims[4])+
+  theme(axis.text = element_blank(),
+        panel.spacing.x = unit(0,"pt"),
+        panel.spacing.y=unit(0,"pt"))
+out
+```
+
+
