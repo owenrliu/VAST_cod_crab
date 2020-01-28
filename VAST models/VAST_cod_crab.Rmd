@@ -16,6 +16,7 @@ library(TMB)
 library(VAST)
 library(tidyverse)
 library(here)
+library(magrittr)
 map <- maps::map
 
 # figure theme
@@ -219,21 +220,51 @@ We import and organize the environmental density covariates.
 
 ```{r}
 # Finally, we need the density covariates (temperature and depth)
-# this will go into VAST::make_data as a 3 dimensional array
-# with dimensions nknots x nyears x nvars
 # We use temperature and depth data interpolated in another script
 library(RANN)
-nbt.interpolated <- read_rds(here::here('data','processed','nbt_interpolated.rds'))
-depth.interpolated <- read_rds(here::here('data','processed','depth_interpolated.rds')) %>% select(-year) %>% 
-  #rescale depth to have sd<10 for numerical stability
-  mutate(depth=depth/100)
+nbt.interpolated <- read_rds(here::here('data','processed','nbt_interpolated.rds')) %>% 
+  #normalize to zero mean and unit variance
+  mutate(temp_norm=(temp-mean(temp))/sd(temp)) %>% 
+  select(-temp)
 
+depth.interpolated <- read_rds(here::here('data','processed','depth_interpolated.rds')) %>% select(-year) %>% 
+  #normalize to zero mean and unit variance
+  mutate(depth_norm=(depth-mean(depth))/sd(depth)) %>% 
+  select(-depth)
+
+
+# Find nearest neighbors for environmental covariates
 # change for VAST 8_0_0 : no need to make array of density data
 # instead we provide lat/lon/covariates, plus a formula
-covars <- nbt.interpolated %>% left_join(depth.interpolated) %>% 
-  rename(Lat=y,Lon=x,Year=year) %>% as.data.frame()
-formula = ~temp + depth
+# formula includes quadratic terms for both covariates
 
+# For each year of sampling data, find the nearest neighbor in temp/depth data
+# we need the locations of data in UTM coordinates because that's what the covariate data contain
+loc_i <- Spatial_List[['loc_i']] %>% as_tibble() %>% set_names(c("E_km","N_km"))
+dat_utm <- dat %>% bind_cols(loc_i)
+loc_query <- loc_i %>% select(E_km,N_km)
+  
+# locations of interpolated temperature and depth info (temp and depth have the same interpolated points)
+loc_covars <- nbt.interpolated %>% distinct(x,y)
+
+# find nearest neighbors
+which_nn <- nn2(data=loc_covars,query=loc_query,k=1)$nn.idx[,1]
+
+# add observation numbers to covariate data to match to nearest neighbor calculation
+nbt.interpolated %<>% group_by(year) %>% mutate(obs=row_number()) %>% ungroup() %>% select(year,obs,temp_norm)
+depth.interpolated %<>% ungroup() %>%  mutate(obs=row_number()) %>% select(obs,depth_norm)
+
+# produce data frame of covariate data
+covars <- dat_utm %>% mutate(nn_covar=which_nn) %>% 
+  # join temperature data based on year and nearest-neighbor observation
+  left_join(nbt.interpolated,by=c('year','nn_covar'='obs')) %>% 
+  left_join(depth.interpolated,by=c('nn_covar'='obs')) %>% 
+  select(Lat,Lon,year,temp_norm,depth_norm) %>% 
+  rename(Year=year)
+
+formula = ~temp_norm + depth_norm +I(temp_norm^2)+I(depth_norm^2)
+
+## DEPRECATED: OLD X_xtp version
 # make_density_covariates <- function(type="loc_x") {
 #   # locations of knots from Spatial_List object
 #   loc_query <- Spatial_List[[type]]
@@ -244,7 +275,7 @@ formula = ~temp + depth
 #   # nearest neighbors (knots and interpolated covariates)
 #   which_nn <- nn2(data=loc_covars,query=loc_query,k=1)$nn.idx[,1]
 #   # for each knot in each year, find nearest neighbor from the interpolated datasets
-#   X_xtp <- array(data=NA,dim=c(nrow(loc_query),length(yrs),2))
+#   X_xtp <- array(data=NA,dim=c(nrow(loc_query),length(yrs),4))
 #   # fill in covariates for each knot in each year
 #   # depth is constant across years
 #   for(j in 1:length(yrs)) {
@@ -295,7 +326,11 @@ TmbList = make_model("build_model"=TRUE,
                      "Method"=Method)
 Map = TmbList$Map
 Parameters = TmbList$Parameters
+```
 
+Run parameter estimation
+
+```{r}
 # Optimize
 Obj = TmbList[["Obj"]]
 Obj$fn( Obj$par )
@@ -310,20 +345,19 @@ Opt = TMBhelper::fit_tmb( obj=Obj, lower=TmbList[["Lower"]], upper=TmbList[["Upp
 SDr <- sdreport(Obj)
 Opt$time_for_run
 Report = Obj$report()
-Save = list("Opt"=Opt, "Report"=Report, SDReport=SDr, "ParHat"=Obj$env$parList(Opt$opt$par), "Data"=dat, "Map"=Map)
+Save = list("Opt"=Opt, "Report"=Report, SDReport=SDr, "ParHat"=Obj$env$parList(Opt$par), "Data"=dat, "Map"=Map)
 save(Save, file=here::here('data','VAST output',"Save.RData"))
 if("opt" %in% names(Opt)) capture.output( Opt$opt, file=here::here('data','VAST output',"parameter_estimates.txt"))
 ```
 
 ## Explore Model Outputs
 
-Look at some model diagnostics
-
+### Diagnostic plots
 ```{r}
 # if not re-running, load
 load(here::here('data','VAST output',"Record.Rdata"))
 load(here::here('data','VAST output',"Save.RData"))
-load(here::here('data','VAST output',"Spatial_List.Rdata"))
+Spatial_List <- read_rds(here::here('data','VAST output',"Spatial_List.rds"))
 load(here::here('data','VAST output',"parameter_estimates.Rdata"))
 dat <- Save$Data
 list2env(Record,envir = environment())
@@ -334,7 +368,7 @@ source(here::here('data','scripts','output__helper_fxns.R'))
 # plot_data(Extrapolation_List=Extrapolation_List, Spatial_List=Spatial_List, Data_Geostat=dat, PlotDir=fp )
 
 # convergence
-pander::pandoc.table(Save$Opt$opt$diagnostics[,c('Param','Lower','MLE','Upper','final_gradient')] ) 
+pander::pandoc.table(Save$Opt$diagnostics[,c('Param','Lower','MLE','Upper','final_gradient')] ) 
 
 ## Check encounter probabilities
 # Check whether observed encounter frequencies for either low or high probability samples 
@@ -370,19 +404,23 @@ res <- plot_residuals(Lat_i=dat[,'Lat'], Lon_i=dat[,'Lon'], spatial_list=Spatial
 # We can visualize which direction has faster or slower decorrelation (termed "geometric anisotropy")
 plot_anisotropy( FileName=paste0(fp,"Aniso.png"), Report=Report, TmbData=TmbData )
 
+```
 
+### Model Outputs
+
+```{r}
 #### View Model Outputs ####
 
 ## Plot spatial and spatio-temporal covariance
 
 # Spatial and spatio-temporal covariance among species in encounter probability and positive catch rates 
 # (depending upon what is turned on via `FieldConfig`)
-Cor_List = summarize_covariance( Report=Report, ParHat=Obj$env$parList(), Data=TmbData, 
-                                 SD=SDr, plot_cor=TRUE,figname = "Cor", category_names=levels(dat$spp), 
-                                 plotdir=fp, mgp=c(2,0.5,0), tck=-0.02, oma=c(0,5,2,2) )
-Cov_List = summarize_covariance( Report=Report, ParHat=Obj$env$parList(), Data=TmbData, 
-                                 SD=SDr, plot_cor=FALSE,figname = "Cov", category_names=levels(dat$spp), 
-                                 plotdir=fp, mgp=c(2,0.5,0), tck=-0.02, oma=c(0,5,2,2) )
+# Cor_List = summarize_covariance( Report=Report, ParHat=Obj$env$parList(), Data=TmbData, 
+#                                  SD=SDr, plot_cor=TRUE,figname = "Cor", category_names=levels(dat$spp), 
+#                                  plotdir=fp, mgp=c(2,0.5,0), tck=-0.02, oma=c(0,5,2,2) )
+# Cov_List = summarize_covariance( Report=Report, ParHat=Obj$env$parList(), Data=TmbData, 
+#                                  SD=SDr, plot_cor=FALSE,figname = "Cov", category_names=levels(dat$spp), 
+#                                  plotdir=fp, mgp=c(2,0.5,0), tck=-0.02, oma=c(0,5,2,2) )
 
 ## Density surface for each year
 # predicted density, but other options are obtained via other integers passed to `plot_set` as described in `?plot_maps`
@@ -414,5 +452,11 @@ fct_loadings <- plot_fct_loadings(factors,dat,rotated = TRUE,fp)
 
 outs <- list(factors=factors,fct_loadings=fct_loadings,res=res,Index=Index,range_index=range_index)
 save(outs,file=paste0(fp,"derived_quantities.Rdata"))
+```
+
+### Correlations
+
+```{r}
+
 ```
 

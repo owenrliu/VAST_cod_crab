@@ -113,7 +113,7 @@ plot_fct_loadings <- function(factors,dat,rotated=TRUE,fp,saveplots=TRUE) {
   out <-ggplot(loadings_lng,aes(spp,load,fill=is_pos))+
     geom_bar(stat='identity')+
     geom_hline(yintercept=0,col='black')+
-    geom_text(aes(x=4,y=1,label=prop),check_overlap = T)+
+    geom_text(aes(x=4,y=1.5,label=prop),check_overlap = T)+
     facet_grid(fct_num~fct)+
     guides(fill='none')+
     labs(x="Species",y="Loading",title="Factor Loadings")+

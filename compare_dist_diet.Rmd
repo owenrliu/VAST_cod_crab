@@ -52,7 +52,7 @@ x %<>% mutate(knot=row_number()) %>%
   pivot_longer(names_to='year',values_to = 'stomach_contents',1:31) %>% 
   mutate(year=as.numeric(year))
 
-owen_yrs <- sort(unique(owen$Data$Year))
+owen_yrs <- sort(unique(owen$Data$year))
 cat_names <- tools::toTitleCase(levels(owen$Data$spp))
 z <- purrr::map_df(1:length(owen_yrs),function(yr) {
   y[,,yr] %>% as_tibble() %>% set_names(cat_names) %>% mutate(knot=row_number()) %>% mutate(year=owen_yrs[yr])
