@@ -7,6 +7,7 @@
 # 6. Time series indices
 
 library(tidyverse)
+library(here)
 library(sf)
 library(VAST)
 library(abind)
@@ -40,15 +41,29 @@ ak <- read_sf(here('data','spatial','cb_2017_02_anrc_500k.shp')) %>%
   st_transform(26904)
           
 ## data for plotting
-fp = paste0(getwd(),'/vast/output/const_intercept/')
-load(paste0(fp,"derived_quantities.Rdata"))
-load(paste0(fp,"Extrapolation_List.Rdata"))
-load(paste0(fp,"Spatial_List.Rdata"))
-load(paste0(fp,"Save.Rdata"))
+fp = here::here('data','VAST output')
+load(here::here('data','VAST output','plots',"derived_quantities.Rdata"))
+Extrapolation_List <- read_rds(paste0(fp,"/Extrapolation_List.rds"))
+Spatial_List <- read_rds(paste0(fp,"/Spatial_List.rds"))
+load(paste0(fp,"/Save.RData"))
+load(paste0(fp,"/TMBData.RData"))
 Report <- Save$Report
+SDr <- Save$SDReport
+dat=Save$Data
+Year_Set = seq(min(dat$year),max(dat$year))
+Years2Include = which( Year_Set %in% sort(unique(dat$year)))
+Index = plot_biomass_index( DirName=fp, TmbData=TmbData, Sdreport=SDr, Year_Set=Year_Set, 
+                            category_names=levels(dat$spp),Years2Include=Year_Set, use_biascorr=TRUE )
 
-load('data/depth_interpolated.RData')
-load('data/nbt_interpolated.RData')
+MapDetails_List = make_map_info( "Region"="Eastern_Bering_Sea",spatial_list = Spatial_List, "NN_Extrap"=Spatial_List$PolygonList$NN_Extrap, "Extrapolation_List"=Extrapolation_List )
+
+# factors <- plot_factors( Report=Save$Report, ParHat=Save$ParHat, Data=TmbData, SD=SDr, mapdetails_list=MapDetails_List, 
+#                          Year_Set=Year_Set, category_names=levels(dat$spp), plotdir=paste0(here::here('data','VAST output','plots'),'/'))
+# write_rds(factors,here::here('data','VAST output','factors.rds'))
+factors <- read_rds(here::here('data','VAST output','factors.rds'))
+
+depth.interpolated <- read_rds(here::here('data','processed','depth_interpolated.rds'))
+nbt.interpolated <- read_rds(here::here('data','processed','nbt_interpolated.rds'))
 
 find_temperature <- function(Spatial_List,dat) {
   # locations of knots from Spatial_List object
@@ -65,7 +80,7 @@ find_temperature <- function(Spatial_List,dat) {
   # for each knot in each year, find nearest neighbor from the interpolated datasets
   X_x <- tibble(idx=1:nrow(loc_query),meantemp=mbt$meantemp[which_nn])
   # spatial
-  X_i <- dat %>% select(lon,lat) %>% bind_cols(select(X_x,meantemp))
+  X_i <- dat %>% select(Lon,Lat) %>% bind_cols(select(X_x,meantemp))
   return(X_i)
 }
 
@@ -159,9 +174,10 @@ map_points <- function(Extrapolation_List) {
   return(pts)
 }
 
-map_density <- function(dat,Report,Extrapolation_list,category) {
+map_density <- function(dat,Report,Extrapolation_list,category,years='all') {
   
-  dens <- Report$D_xcy
+  dens <- Report$D_gcy
+  
   cols<-colorRampPalette(colors=c("darkblue","blue","lightblue","lightgreen","yellow","orange","red"))(50)
   
   pts <- map_points(Extrapolation_List)
@@ -175,14 +191,19 @@ map_density <- function(dat,Report,Extrapolation_list,category) {
 
   df <- tibble(knot=rep(1:knots,length(Years2Include)),year=rep(Years2Include,each=knots),dens=log(as.numeric(dens[,category,])))
   sp_df<-pts %>% left_join(df,by=c('idx'='knot')) %>% 
-    group_by(idx) %>% sample_n(500)
+    group_by(year) %>% sample_n(15000,replace=T)
+  
+  if(any(years!='all')){
+    sp_df <- pts %>% left_join(df,by=c('idx'='knot')) %>% 
+      filter(year %in% years)
+  }
   # make the facetted plot by year
   # cols<-colorRampPalette(colors=c("darkblue","blue","lightblue","lightgreen","yellow","orange","red"))(50)
   out<-ggplot()+
     geom_point(data=sp_df,aes(E_km,N_km,col=dens),shape=".")+
     scale_color_gradientn(colors=cols)+
     facet_wrap(~year)+
-    labs(title="",x="Eastings",y="Northings",col="Log Numbers\nDensity")+
+    labs(title="",x="Eastings",y="Northings",col="Log Numbers")+
     geom_sf(data=ak,fill='gray50',col=NA)+
     coord_sf(crs = st_crs(ak), datum = NA) +
     xlim(lims[1],lims[3])+ylim(lims[2],lims[4])+
@@ -339,16 +360,16 @@ plot_fct_maps <- function(Extrapolation_List,Report,dat,which_lpred,which_f,aver
   if(grepl('Omega',which_lpred)){
     out<-ggplot()+
       geom_point(data=sp_df,aes(E_km,N_km,col=value),size=0.75)+
-      geom_contour(data = bering_bathy, 
-                   aes(x=x, y=y, z=z),
-                   breaks=c(-100),
-                   size=c(0.3),
-                   colour="black")+
-      geom_contour(data = bering_bathy, 
-                   aes(x=x, y=y, z=z),
-                   breaks=c(-50),
-                   size=c(0.3),
-                   colour="black")+
+      # geom_contour(data = bering_bathy,
+      #              aes(x=x, y=y, z=z),
+      #              breaks=c(-100),
+      #              size=c(0.3),
+      #              colour="black")+
+      # geom_contour(data = bering_bathy, 
+      #              aes(x=x, y=y, z=z),
+      #              breaks=c(-50),
+      #              size=c(0.3),
+      #              colour="black")+
       scale_color_gradient2(low="darkblue",mid="lightgreen",high="red",midpoint=0)+
       labs(title="",x="Eastings",y="Northings",col="")+
       geom_sf(data=ak,fill='gray50',col=NA)+
@@ -597,6 +618,48 @@ find_density_covariates <- function(Spatial_List,dat) {
   }
   return(X_xtp)
 }
+
+map_temperature <- function(Spatial_List,dat,years='all') {
+  
+  covars <- find_density_covariates(Spatial_List,dat)
+  cols<-colorRampPalette(colors=c("darkblue","blue","lightblue","lightgreen","yellow","orange","red"))(50)
+  
+  pts <- map_points(Extrapolation_List)
+  lims <- st_bbox(pts)
+  st_geometry(pts) <- NULL
+  Year_Set = seq(min(dat$year),max(dat$year))
+  Years2Include = Year_Set[which( Year_Set %in% sort(unique(dat$year)))]
+  knots <- dim(covars)[1]
+  
+  cats <- tools::toTitleCase(levels(dat$spp))
+  
+  df <- tibble(knot=rep(1:knots,length(Years2Include)),year=rep(Years2Include,each=knots),meantemp=as.numeric(covars[,,1]))
+  sp_df<-pts %>% left_join(df,by=c('idx'='knot')) %>% 
+    group_by(year) %>% sample_n(15000,replace=T)
+  
+  if(any(years!='all')){
+    sp_df <- pts %>% left_join(df,by=c('idx'='knot')) %>% 
+      filter(year %in% years)
+  }
+  # make the facetted plot by year
+  # cols<-colorRampPalette(colors=c("darkblue","blue","lightblue","lightgreen","yellow","orange","red"))(50)
+  out<-ggplot()+
+    geom_point(data=sp_df,aes(E_km,N_km,col=meantemp),shape=".")+
+    scale_color_gradientn(colors=cols)+
+    facet_wrap(~year)+
+    labs(title="",x="Eastings",y="Northings",col="Temperature")+
+    geom_sf(data=ak,fill='gray50',col=NA)+
+    coord_sf(crs = st_crs(ak), datum = NA) +
+    xlim(lims[1],lims[3])+ylim(lims[2],lims[4])+
+    # scale_color_viridis()+
+    theme(axis.text = element_blank(),
+          panel.spacing.x = unit(0,"pt"),
+          panel.spacing.y=unit(0,"pt"))
+  
+  return(out)
+}
+
+
 fct_covariate_correlation <- function(Spatial_List,dat,factors,which_lpred,which_f,average=FALSE){
   covars <- find_density_covariates(Spatial_List,dat)
   knots <- 1:dim(covars)[1]

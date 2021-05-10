@@ -315,7 +315,7 @@ TmbData = make_data("Version"=Version,
                     "Method"=Spatial_List$Method,
                     "Aniso"=Aniso,
                     "Options"=Options)
-
+save(TmbData,file=here::here('data','VAST output','TMBData.Rdata'))
 ## Build TMB model object
 TmbList = make_model("build_model"=TRUE,
                      "TmbData"=TmbData, 

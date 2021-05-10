@@ -9,11 +9,16 @@ output: html_document
 
 Compare outputs of Owen's distributional analysis for cod and crab and Arnaud's predator-expanded stomach contents data.
 
+## Load Data
+
 ```{r}
 library(tidyverse)
 library(here)
 library(magrittr)
 library(sf)
+library(RANN)
+library(viridis)
+library(VAST)
 
 ak <- read_sf(here::here('data','spatial','cb_2017_02_anrc_500k.shp')) %>% 
   st_union() %>% 
@@ -30,22 +35,41 @@ plot_theme <-   theme_minimal()+
         panel.border=element_rect(color='black',fill=NA))
 theme_set(plot_theme)
 
-rm(list=ls())
-load(here::here('data','processed','PESCs_PCod.RData'))
-pesc <- Save
 
 load(here::here('data','VAST output','Save.RData'))
 load(here::here('data','Vast output','plots','derived_quantities.Rdata'))
+Extrapolation_List <- read_rds(here::here('data','VAST output',"Extrapolation_List.rds"))
+Spatial_List <- read_rds(here::here('data','VAST output',"Spatial_List.rds"))
 
 owen <- Save
+Report <- Save$Report
+dat <- Save$Data
 
 rm(Save)
 
-x <- pesc$PESC_Knots
-y <- log(owen$Report$D_gcy)
+
+load(here::here('data','Log_PESC_Extrapolation_grid_cells_PCod.RData'))
+MapDetails_List = make_map_info("Region"="Eastern_Bering_Sea",spatial_list = Spatial_List, "NN_Extrap"=Spatial_List$PolygonList$NN_Extrap, "Extrapolation_List"=Extrapolation_List)
+pts <- MapDetails_List$PlotDF[,c('Lon','Lat','x2i','Include')] %>% 
+  st_as_sf(coords=c('Lon','Lat'),crs=4326) %>% 
+  #convert to AK UTM zone
+  st_transform(26904)
+pts[,c("E_km","N_km")] <- st_coordinates(pts)
+# pts$idx <-as.integer(Spatial_List$PolygonList$NN_Extrap$nn.idx)
+pts <-  filter(pts,Include) %>% mutate(idx=row_number())
+lims <- st_bbox(pts)
+st_geometry(pts) <- NULL
+# knots <- 300
+pts_long <- purrr::map_dfr(seq_len(length(c(1984:2003,2005:2015))), ~pts)
+# pesc_grd_long <- pesc_grd_long %>% left_join(pts)
+pesc_grd_long <- tibble(log_pesc=as.numeric(Log_PESC_Extrapolation_grid_cells),year=rep(c(1984:2003,2005:2015),each=nrow(pts))) %>% 
+  bind_cols(pts_long)
+# x <- pesc$PESC_Knots
+# y <- log(owen$Report$D_gcy)
+
 ```
 
-## Convert to long form and compare
+## Compare with Correlation
 
 ```{r}
 x %<>% mutate(knot=row_number()) %>% 
@@ -66,29 +90,551 @@ glimpse(combined_dat)
 cor(combined_dat %>% select(stomach_contents:`Large Cod`))
 ```
 
-## Plot PESC
+
+## Overlap of Temperature Preferences
+
+Let's look to see at the temperature affinities of these two species, according to the modelled abundance/density.
 
 ```{r}
-Extrapolation_List <- read_rds(here::here('data','VAST output',"Extrapolation_List.rds"))
-Spatial_List <- read_rds(here::here('data','VAST output',"Spatial_List.rds"))
+library(RANN)
+nbt.interpolated <- read_rds(here::here('data','processed','nbt_interpolated.rds')) %>% 
+  #normalize to zero mean and unit variance
+  mutate(temp_norm=(temp-mean(temp))/sd(temp))
 
-pts <- Extrapolation_List$Data_Extrap[,c('Lon','Lat','Area_in_survey_km2')] %>% 
+depth.interpolated <- read_rds(here::here('data','processed','depth_interpolated.rds')) %>% select(-year) %>% 
+  #normalize to zero mean and unit variance
+  mutate(depth_norm=(depth-mean(depth))/sd(depth))
+
+
+# Find nearest neighbors for environmental covariates
+# change for VAST 8_0_0 : no need to make array of density data
+# instead we provide lat/lon/covariates, plus a formula
+# formula includes quadratic terms for both covariates
+
+# For each year of sampling data, find the nearest neighbor in temp/depth data
+# we need the locations of data in UTM coordinates because that's what the covariate data contain
+loc_i <- Spatial_List[['loc_i']] %>% as_tibble() %>% set_names(c("E_km","N_km"))
+dat_utm <- dat %>% bind_cols(loc_i)
+loc_query <- loc_i %>% select(E_km,N_km)
+  
+# locations of interpolated temperature and depth info (temp and depth have the same interpolated points)
+loc_covars <- nbt.interpolated %>% distinct(x,y)
+
+# find nearest neighbors
+which_nn <- nn2(data=loc_covars,query=loc_query,k=1)$nn.idx[,1]
+
+# add observation numbers to covariate data to match to nearest neighbor calculation
+nbt.interpolated %<>% group_by(year) %>% mutate(obs=row_number()) %>% ungroup() %>% select(year,x,y,obs,temp,temp_norm)
+depth.interpolated %<>% ungroup() %>%  mutate(obs=row_number()) %>% select(obs,depth,depth_norm)
+
+# produce data frame of covariate data
+covars <- dat_utm %>% mutate(nn_covar=which_nn) %>% 
+  # join temperature data based on year and nearest-neighbor observation
+  left_join(nbt.interpolated,by=c('year','nn_covar'='obs')) %>% 
+  left_join(depth.interpolated,by=c('nn_covar'='obs')) %>% 
+  select(Lat,Lon,year,temp,temp_norm,depth,depth_norm) %>% 
+  rename(Year=year)
+
+# time series of mean temperature across knots over time
+temp_tseries <- covars %>% 
+  group_by(Year) %>% 
+  summarise(mean_temp=mean(temp,na.rm=T)) %>% 
+  ungroup() %>% 
+  ggplot(aes(Year,mean_temp))+
+  geom_line(color='red')+geom_point()+
+  scale_x_continuous(breaks=seq(1980,2015,by=5))+
+  labs(x='Year',y='Mean Temperature',title='')
+temp_tseries
+ggsave(here::here('data','VAST output','plots','mean_temperature_tseries.png'),temp_tseries,w=8,h=4)
+```
+
+
+```{r}
+library(ggsci)
+spp_t <- dat %>% filter(spp%in%c('Opilio immature','medium cod')) %>% 
+  left_join(covars,by=c('year'='Year','Lon','Lat')) %>% 
+  mutate(sppname=ifelse(spp=="Opilio immature",'snow crab','pacific cod')) %>% 
+  group_by(spp) %>% 
+  mutate(abunsum=sum(abun),abun_scaled=abun/abunsum) %>% 
+  ungroup()
+
+spp_t %>% 
+  ggplot(aes(temp,abun,col=sppname))+
+  geom_point()
+
+pa_t <- spp_t %>% 
+  mutate(abun=na_if(abun,0)) %>% 
+  filter(!is.na(abun)) %>% 
+  # 95% quantile
+  # group_by(spp) %>% 
+  # mutate(abun_q=percent_rank(abun)) %>% 
+  # filter(abun_q>.05) %>% 
+  # ungroup() %>% 
+  ggplot(aes(temp,fill=sppname,weight=abun_scaled))+
+  geom_density(alpha=0.5)+
+  scale_x_continuous(breaks=seq(-3,6,by=1))+
+  scale_fill_aaas()+
+  theme(panel.grid=element_blank(),
+        axis.text.y=element_blank())+
+  labs(x="Temperature",fill="Species",y="relative density",title="Realized thermal niches (abundance weighted)")
+pa_t
+ggsave(here::here('data','VAST output','plots','thermal_niches_abun_weighted.png'),pa_t,w=8,h=6)
+```
+
+The temperatures of overalp are around -1 to 4 degrees C. Let's measure how the areas of that temperature range have shifted over time.
+
+```{r}
+# Where are the 50% bands on temperature affinities for the two species?
+temp_range <- spp_t %>% 
+  group_by(spp) %>% 
+  arrange(temp) %>% 
+  mutate(cum_abun=cumsum(abun_scaled),cum_abun_dist=cume_dist(cum_abun)) %>% 
+  ungroup()
+
+temp_lims <- temp_range %>% 
+  group_by(spp) %>% 
+  mutate(is_above_quant75 = cum_abun_dist>0.875,is_below_quant25=cum_abun_dist<0.125) %>% 
+  filter(!is_above_quant75,!is_below_quant25) %>% 
+  ungroup() %>% 
+  summarise(maxT=max(temp,na.rm=T),minT=min(temp,na.rm=T))
+
+thermal_niche_overlap_cumedist <- temp_range %>%
+  ggplot(aes(temp,cum_abun))+
+  geom_line()+
+  geom_vline(xintercept=temp_lims$minT,color='red')+
+  geom_vline(xintercept=temp_lims$maxT,color='red')+
+  facet_wrap(~spp,scales='free_y')+
+  labs(x="Temperature",y="Cumulative Abundance")
+thermal_niche_overlap_cumedist
+ggsave(here::here('data','VAST output','plots','thermal_niche_overlap_cumedist.png'),thermal_niche_overlap_cumedist,w=8,h=4)
+  
+
+area_knots <- Spatial_List$a_gl %>% as_tibble() %>%  mutate(knot_i=row_number())
+t_overlap_ts <- spp_t %>% 
+  filter(temp>=temp_lims$minT,temp<=temp_lims$maxT) %>% 
+  group_by(year) %>% 
+  distinct(knot_i,.keep_all = T) %>% 
+  left_join(area_knots,by="knot_i")
+
+area_t_overlap_plot <- t_overlap_ts %>%
+  summarise(knots=n_distinct(knot_i),area=sum(All_areas)) %>% 
+  ggplot(aes(year,area/1000))+
+  geom_line()+
+  geom_point()+
+  scale_x_continuous(breaks=seq(1980,2020,by=5))+
+  theme(axis.text.x = element_text(angle=90,vjust=0.5))+
+  labs(x='Year',y='Area of preferred temperature overlap\n(1000s sq. km)')
+area_t_overlap_plot
+ggsave(here::here('data','VAST output','plots','area_pref_temp_overlap.png'),area_t_overlap_plot,w=8,h=6)
+```
+
+Map for 2002 and 2010
+
+```{r}
+map_points <- function(Extrapolation_List) {
+  pts <- Extrapolation_List$Data_Extrap[,c('Lon','Lat','Area_in_survey_km2')] %>% 
+    st_as_sf(coords=c('Lon','Lat'),crs=4326) %>% 
+    #convert to AK UTM zone
+    st_transform(26904)
+  pts[,c("E_km","N_km")] <- st_coordinates(pts)
+  pts$idx <-as.integer(Spatial_List$PolygonList$NN_Extrap$nn.idx)
+  pts <- filter(pts,Area_in_survey_km2>0) %>% select(-Area_in_survey_km2)
+  
+  return(pts)
+}
+find_density_covariates <- function(Spatial_List,dat) {
+  # locations of knots from Spatial_List object
+  loc_query <- Spatial_List[['loc_x']]
+  # years
+  yrs <- seq(min(dat$year),max(dat$year))
+  # locations of interpolated temperature and depth info
+  loc_covars <- nbt.interpolated %>% distinct(x,y)
+  # nearest neighbors (knots and interpolated covariates)
+  which_nn <- nn2(data=loc_covars,query=loc_query,k=1)$nn.idx[,1]
+  # for each knot in each year, find nearest neighbor from the interpolated datasets
+  X_xtp <- array(data=NA,dim=c(nrow(loc_query),length(yrs),2))
+  # fill in covariates for each knot in each year
+  # depth is constant across years
+  for(j in 1:length(yrs)) {
+    yr_temp <- nbt.interpolated %>% filter(year==yrs[j])
+    X_xtp[,j,1] <- yr_temp$temp[which_nn]
+    X_xtp[,j,2] <- depth.interpolated$depth[which_nn]
+  }
+  return(X_xtp)
+}
+load(here::here('data','VAST output',"Save.RData"))
+covars <- find_density_covariates(Spatial_List,Save$Data)
+
+pts <- map_points(Extrapolation_List)
+lims <- st_bbox(pts)
+st_geometry(pts) <- NULL
+Year_Set = seq(min(dat$year),max(dat$year))
+Years2Include = Year_Set[which( Year_Set %in% sort(unique(dat$year)))]
+knots <- dim(covars)[1]
+
+cats <- tools::toTitleCase(levels(dat$spp))
+
+df <- tibble(knot=rep(1:knots,length(Years2Include)),year=rep(Years2Include,each=knots),meantemp=as.numeric(covars[,,1])) %>% 
+  # filter for whether it's within the overlap of thermal niches
+  mutate(niche_overlap=ifelse(meantemp>=temp_lims$minT&meantemp<=temp_lims$maxT,TRUE,FALSE))
+
+sp_df <- pts %>% left_join(df,by=c('idx'='knot')) %>% 
+    filter(year %in% c(2002,2010))
+
+# make the facetted plot by year
+# cols<-colorRampPalette(colors=c("darkblue","blue","lightblue","lightgreen","yellow","orange","red"))(50)
+thermal_niche_overlap_map<-ggplot()+
+  geom_point(data=sp_df,aes(E_km,N_km,col=niche_overlap),size=0.25)+
+  scale_color_npg()+
+  facet_wrap(~year)+
+  labs(title="",x="Eastings",y="Northings",col="Thermal Niche\nOverlap")+
+  geom_sf(data=ak,fill='gray50',col=NA)+
+  coord_sf(crs = st_crs(ak), datum = NA) +
+  xlim(lims[1],lims[3])+ylim(lims[2],lims[4])+
+  guides(color=guide_legend(override.aes = list(size=5)))+
+  # scale_color_viridis()+
+  theme(axis.text = element_blank(),
+        panel.spacing.x = unit(0,"pt"),
+        panel.spacing.y=unit(0,"pt"))
+
+thermal_niche_overlap_map
+
+# ggsave(here::here('data','VAST output','plots','thermal_niche_overlap_map.png'),thermal_niche_overlap_map,w=8,h=4)
+```
+
+Thermal affinity index. Calculated a species-specific index based on abundance relative to the temperature at which maximum abundance was observed.
+
+```{r}
+# temp_affinity_index <- spp_t %>% 
+#   group_by(spp) %>%
+#   # for each species, find the abundance relative to the maximum observed abundance
+#   mutate(percent_suitability=percent_rank(abun_scaled)) %>% 
+#   distinct(spp,temp,percent_suitability) %>% 
+#   group_by(spp,temp) %>% 
+#   summarise(percent_suitability=mean(percent_suitability,na.rm=T)) %>% 
+#   ungroup() %>% 
+#   group_by(temp) %>% 
+#   summarise(suitability_both=prod(percent_suitability,na.rm=T))
+# 
+# temp_affinity_index %>% 
+#   ggplot(aes(temp,suitability_both))+
+#   geom_point()+
+#   geom_smooth()
+# 
+# test <- spp_t %>% 
+#   mutate(abun=na_if(abun,0)) %>% 
+#   filter(!is.na(abun)) %>%
+#    ggplot()+stat_density(aes(temp,weight=abun_scaled,outfit=fit<<-..scaled..,xtest=fit2<<-..x..))
+
+```
+
+## Compare Time Series
+
+Compare SDM to PESC output through time series
+
+### Joint Encounter Time Series
+
+```{r}
+# Estimated encounter probability by knot/category/year
+est <- Report$R1_gcy
+
+# Choose species to calculate joint occurence
+# Must be names of categories from original VAST data object
+species_1 <- "Opilio Immature"
+species_2 <- "Medium Cod"
+
+knots = nrow(Report$R1_gcy)
+cats <- factor(tools::toTitleCase(levels(dat$spp)),levels=tools::toTitleCase(levels(dat$spp)))
+years <- seq(min(dat$year),max(dat$year))
+
+# Organize species data into long-form data frame instead of 3-D array
+spp1_dat <- est[,which(cats==species_1),] %>% as_tibble() %>% set_names(as.character(years)) %>% 
+  mutate(knot=row_number()) %>% pivot_longer(-knot,names_to = "year",values_to="enc_1") %>% 
+  mutate(year=as.numeric(year))
+spp2_dat <- est[,which(cats==species_2),] %>% as_tibble() %>% set_names(as.character(years)) %>% 
+  mutate(knot=row_number()) %>% pivot_longer(-knot,names_to = "year",values_to="enc_2")%>% 
+  mutate(year=as.numeric(year))
+
+# Join the two species' data by year and knot
+df <- spp1_dat %>% left_join(spp2_dat,by=c('year','knot')) %>% 
+  # calc joint encounter
+  mutate(joint_enc=enc_1*enc_2) %>% 
+  ungroup()%>% 
+  # calculate means by year
+  group_by(year) %>% 
+  summarise(mean_joint_enc=mean(joint_enc,na.rm=T)) %>% 
+  ungroup()
+
+# Plot time series of mean joint encounter rate across knots for each year
+out <- df %>% 
+  ggplot(aes(year,mean_joint_enc))+
+  geom_line()+
+  geom_point()+
+  labs(x="Year",y="Mean Joint Encounter Rate",title="")+
+  ylim(c(0.8,1))+
+  scale_x_continuous(breaks=seq(1980,2020,by=5))+
+  theme(axis.text.x = element_text(angle=90))
+out
+```
+
+### Hurlbert's Index
+
+Following Carroll et al. (2019) and Hurlbert (1978), we calculate Hurlbert's index, which measure interspecific encounter rates between cod and crab. It requires data on abundance and area of each spatial sample.
+
+```{r}
+hurlbert_fn <- function(prey, pred, area) {
+  area_occupied <- sum(area[pred > 0 | prey > 0], na.rm = T)
+  p_prey <- prey/sum(prey, na.rm = T)
+  p_pred <- pred/sum(pred, na.rm = T)
+  sum((p_pred*p_prey)/(area/area_occupied), na.rm = T)
+}
+
+
+# get area of each sample
+areas <- Spatial_List$a_gl %>% as_tibble() %>% set_names("area") %>% mutate(knot=row_number())
+
+# Estimated abundances by knot/category/year
+dens <- Report$D_gcy
+
+# Choose species to calculate joint occurence
+# Must be names of categories from original VAST data object
+species_1 <- "Opilio Immature"
+species_2 <- "Medium Cod"
+
+knots = nrow(dens)
+cats <- factor(tools::toTitleCase(levels(dat$spp)),levels=tools::toTitleCase(levels(dat$spp)))
+years <- seq(min(dat$year),max(dat$year))
+
+# Organize species data into long-form data frame instead of 3-D array
+spp1_dens <- dens[,which(cats==species_1),] %>% as_tibble() %>% set_names(as.character(years)) %>% 
+  mutate(knot=row_number()) %>% pivot_longer(-knot,names_to = "year",values_to="dens_1") %>% 
+  mutate(year=as.numeric(year)) %>% 
+  left_join(areas) %>% 
+  mutate(abun_1=dens_1*area)
+spp2_dens <- dens[,which(cats==species_2),] %>% as_tibble() %>% set_names(as.character(years)) %>% 
+  mutate(knot=row_number()) %>% pivot_longer(-knot,names_to = "year",values_to="dens_2")%>% 
+  mutate(year=as.numeric(year)) %>% 
+  left_join(areas)%>% 
+  mutate(abun_2=dens_2*area)
+
+# Join the two species' data by year and knot
+df_dens <- spp1_dens %>% left_join(spp2_dens,by=c('year','knot','area')) %>% 
+  # calc Hurlbert index
+  group_by(year) %>% 
+  mutate(hurlbert=hurlbert_fn(prey=abun_1,pred=abun_2,area=area)) %>% 
+  ungroup()
+
+hurlbert_yr <- df_dens %>% 
+  group_by(year) %>% 
+  summarise(hurlbert=sum(hurlbert,na.rm=T))
+
+# Plot time series of total Hurlbert index across knots for each year
+hurlbert_ts <- hurlbert_yr %>% 
+  ggplot(aes(year,hurlbert))+
+  geom_line()+
+  geom_point()+
+  labs(x="Year",y="Hurlbert Index",title="")+
+  scale_x_continuous(breaks=seq(1980,2020,by=5))+
+  theme(axis.text.x = element_text(angle=90,vjust = 0.5))
+hurlbert_ts
+
+```
+
+### A-B Ratio
+
+```{r}
+AB_overlapfn <- function(prey, pred) {
+  (pred - mean(pred, na.rm = T)) * (prey - mean(prey, na.rm = T))/(mean(pred, na.rm = T) * mean(prey, na.rm = T)) 
+}
+# hurlbert_yr <- df_dens %>% 
+#   group_by(year) %>% 
+#   summarise(hurlbert=sum(hurlbert,na.rm=T))
+
+AB_knot_yr <- df_dens %>% 
+  group_by(year) %>% 
+  mutate(ABratio=AB_overlapfn(prey=dens_1,pred=dens_2)) %>% 
+  ungroup()
+
+AB_yr <- AB_knot_yr %>% 
+  group_by(year) %>% 
+  summarise(ABratio=mean(ABratio,na.rm=T)) %>% 
+  ungroup()
+
+ABratio_ts <- AB_yr %>% 
+  ggplot(aes(year,ABratio))+
+  geom_line()+
+  geom_point()+
+  labs(x="Year",y="AB Ratio",title="")+
+  scale_x_continuous(breaks=seq(1980,2020,by=5))+
+  theme(axis.text.x = element_text(angle=90,vjust = 0.5))+
+  labs(title="Mean AB Ratio over time for all knots")
+ABratio_ts
+```
+
+
+### PESC Time Series
+
+```{r}
+## Implementation with PESC data
+# load(here::here('data','processed','PESCs_PCod.RData'))
+# pesc <- Save
+# 
+# pesc_knots <- pesc$PESC_Knots
+# # convert PESC to long form
+# pesc_knots %<>% mutate(knot=row_number()) %>% 
+#   pivot_longer(names_to='year',values_to = 'stomach_contents',1:31) %>% 
+#   mutate(year=as.numeric(year))
+  
+pesc_knots_summ <- pesc_grd_long %>% 
+  # calculate means by year
+  group_by(year) %>% 
+  summarise(mean_pesc=mean(log_pesc,na.rm=T)) %>% 
+  ungroup() 
+
+# Plot time series of mean PESC across knots for each year
+out2 <- pesc_knots_summ %>% 
+  ggplot(aes(year,mean_pesc))+
+  geom_line()+
+  geom_point()+
+  scale_x_continuous(breaks=seq(1980,2020,by=5))+
+  labs(x="Year",y="Mean PESC",title="PESC (means from output)")+
+  theme(axis.text.x = element_text(angle=90,vjust=0.5))
+out2
+ggsave(here::here('data','VAST output','plots','mean_pesc.png'),out2,w=6,h=3)
+```
+
+Also can use the VAST output itself, which dervies a time series of combined PESC
+
+```{r}
+# load(here::here('data','VAST output','PESC_time_series_PCod.RData'))
+# pesc_derived <- tibble(year=Save$Year,pesc=Save$PESC,se=Save$SE_PESC) %>% 
+#   mutate(upper=pesc+se,lower=pesc-se)
+# 
+# out3 <- pesc_derived %>% 
+#   ggplot(aes(year,pesc,ymax=upper,ymin=lower))+
+#   geom_line()+
+#   geom_pointrange()+
+#   scale_x_continuous(breaks=seq(1980,2020,by=5))+
+#   labs(x="Year",y="Total PESC",title="PESC Derived")+
+#   theme(axis.text.x = element_text(angle=90,vjust=0.5))
+# out3
+# ggsave(here::here('data','VAST output','plots','total_pesc_derived.png'),out3,w=6,h=3)
+```
+
+
+### Combined Time Series
+
+```{r}
+## And putting them together with two y-axes
+combined_df <- hurlbert_yr %>%
+  left_join(AB_yr,by=c('year')) %>% 
+  left_join(pesc_knots_summ,by=c('year'))
+
+combined_plot <- combined_df %>% 
+  ggplot()+
+  geom_line(aes(year,ABratio))+
+  geom_point(aes(year,ABratio))+
+  # weird fudging to get the secondary axis to look right
+  geom_line(aes(year,mean_pesc*1.33/2-3),col='seagreen')+
+  geom_point(aes(year,mean_pesc*1.33/2-3),col='seagreen')+
+  scale_y_continuous(limits=c(-1,1),sec.axis=sec_axis(~(.+3)*2/1.33,name="Log PESC"))+
+  scale_x_continuous(breaks=seq(1980,2020,by=5))+
+  labs(x="Year",y="AB Ratio",title="AB Ratio and\nMean Estimated PESC")+
+  theme(axis.text.x = element_text(angle=90,vjust=0.5),
+        axis.text.y.right=element_text(color='seagreen'),
+        axis.title.y.right = element_text(color='seagreen'))
+combined_plot
+
+ggsave(here::here('data','VAST output','plots','abratio_vs_pesc.png'),combined_plot,h=4,w=6)
+```
+
+### Add Recruitment from Assessment
+
+Data taken from Szuwalski 2018.
+
+```{r}
+assessyr <- str_split("1982 1983 1984 1985 1986 1987 1988 1989 1990 1991 1992 1993 1994 1995 1996 1997 1998 1999 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 2011 2012 2013 2014 2015 2016 2017"," ")[[1]] %>% as.numeric()
+assess_rec <- str_split("162.5 463.6 1087 4557 1517 842.9 373.6 942.3 891.8 1444 1484 1179 267.8 208.4 240.2 308.9 454 243.1 194.5 180.1 545.8 1326 536.7 527.1 206.8 257.8 2277 749.4 432.3 532.4 643 446.3 1225 2765 2847 600", " ")[[1]] %>% as.numeric()
+assess_recruitment <- tibble(year=assessyr,recruits=assess_rec)
+combined_df %<>%
+  left_join(assess_recruitment,by=c('year'))
+
+recruitment_plot <- combined_df %>% 
+  ggplot()+
+  geom_line(aes(year,recruits),col='blue')+
+  geom_point(aes(year,recruits),col='blue')+
+  # weird fudging to get the secondary axis to look right
+  geom_line(aes(year,pesc*4438/121900-500),col='seagreen')+
+  geom_pointrange(aes(year,pesc*4438/121900-500,ymax=upper*4438/121900-500,ymin=lower*4438/121900-500),col='seagreen')+
+  scale_y_continuous(limits=c(0,4800),sec.axis=sec_axis(~(.+500)*27.467,name="Total PESC"))+
+  scale_x_continuous(breaks=seq(1980,2020,by=5))+
+  labs(x="Year",y="Recruits (Millions)",title="Snow Crab Recruitment from Assessment vs.\nTotal PESC")+
+  theme(axis.text.x = element_text(angle=90),
+        axis.title.y.right = element_text(color='seagreen'))
+recruitment_plot
+ggsave(here::here('data','VAST output','plots','assessment_recruitment.png'),recruitment_plot,h=3,w=6)
+```
+
+
+### Map of Knots
+
+For reference
+
+```{r}
+loc_knots <- Spatial_List$loc_x %>% as_tibble() %>% set_names(c("x","y")) %>% 
+  mutate(knot=row_number()) %>% 
+  st_as_sf(coords=c('x','y'),crs=st_crs(ak))
+bbox <- st_bbox(loc_knots)
+
+knots_plot <- ggplot()+ 
+  geom_sf(data=ak,fill='gray30',col=NA)+
+  geom_sf_text(data=loc_knots,aes(label=knot),col='gray30',size=2)+
+  coord_sf(crs = st_crs(ak), datum = NA) +
+  xlim(bbox[1],bbox[3])+ylim(bbox[2],bbox[4])+
+  theme(axis.text = element_blank())+
+  labs(x="",y="")
+
+ggsave(here::here('data','VAST output','plots','knot_locs.png'),knots_plot,w=4,h=4)
+
+# testing- low occurrence places of immature crab
+# number of years <0.1 prob of occurrence
+test <- spp1_dat %>% mutate(is_low=enc_1<0.1) %>% group_by(knot) %>% 
+  summarise(is_low=sum(is_low)) %>% ungroup() %>% 
+  mutate(is_low_alot=is_low>5) %>% 
+  right_join(loc_knots) %>% st_as_sf()
+library(viridis)
+ggplot()+ 
+  geom_sf(data=ak,fill='gray30',col=NA)+
+  geom_sf_text(data=test,aes(label=knot,col=is_low_alot),size=2)+
+  coord_sf(crs = st_crs(ak), datum = NA) +
+  # scale_color_viridis()+
+  xlim(bbox[1],bbox[3])+ylim(bbox[2],bbox[4])+
+  theme(axis.text = element_blank())+
+  labs(x="",y="")
+```
+
+PESC map by year
+
+```{r,eval=T,fig.height=8,fig.width=8}
+pts <- MapDetails_List$PlotDF[,c('Lon','Lat','x2i','Include')] %>% 
   st_as_sf(coords=c('Lon','Lat'),crs=4326) %>% 
   #convert to AK UTM zone
   st_transform(26904)
 pts[,c("E_km","N_km")] <- st_coordinates(pts)
-pts$idx <-as.integer(Spatial_List$PolygonList$NN_Extrap$nn.idx)
-pts <- filter(pts,Area_in_survey_km2>0) %>% select(-Area_in_survey_km2)
+# pts$idx <-as.integer(Spatial_List$PolygonList$NN_Extrap$nn.idx)
+pts <- filter(pts,Include) %>% select(-Include) %>% mutate(idx=row_number())
 lims <- st_bbox(pts)
 st_geometry(pts) <- NULL
-knots <- 300
-
-sp_df<-pts %>% left_join(x,by=c('idx'='knot'))
+# knots <- 300
+pts_long <- purrr::map_dfr(seq_len(length(c(1984:2003,2005:2015))), ~pts)
+# pesc_grd_long <- pesc_grd_long %>% left_join(pts)
+pesc_grd_long <- tibble(log_pesc=as.numeric(Log_PESC_Extrapolation_grid_cells),year=rep(c(1984:2003,2005:2015),each=nrow(pts))) %>% 
+  bind_cols(pts_long)
 
 # make the facetted plot by year
 cols<-colorRampPalette(colors=c("darkblue","blue","lightblue","lightgreen","yellow","orange","red"))(50)
 out<-ggplot()+
-  geom_point(data=sp_df,aes(E_km,N_km,col=log(stomach_contents)),size=0.25)+
+  geom_point(data=pesc_grd_long,aes(E_km,N_km,col=log_pesc),size=1)+
   scale_color_gradientn(colors=cols)+
   facet_wrap(~year)+
   labs(title="PESC",x="Eastings",y="Northings",col="")+
@@ -99,6 +645,99 @@ out<-ggplot()+
         panel.spacing.x = unit(0,"pt"),
         panel.spacing.y=unit(0,"pt"))
 out
+
+ggsave(here::here('data','VAST output','plots','pesc_by_yr.png'),out)
 ```
 
+### Compare PESC, ABRatio, Temperature by Knot
+
+```{r}
+pesc_abratio_temp <- pesc_grd_long %>% 
+  select(-idx) %>% 
+  rename(knot=x2i) %>% 
+  left_join(AB_knot_yr,by=c('year'='year','knot'='knot')) %>% 
+  left_join(select(spp_t,year,knot_i,temp),by=c('year'='year','knot'='knot_i')) %>% 
+  select(year,knot,E_km,N_km,log_pesc,ABratio,temp) %>% 
+  distinct()
+glimpse(pesc_abratio_temp)
+pesc_abratio_corrs <- pesc_abratio_temp %>% 
+  select(knot,log_pesc,ABratio) %>% 
+  filter(!is.na(log_pesc),!is.na(ABratio)) %>% 
+  distinct() %>% 
+  group_by(knot) %>% 
+  summarise(corr_pesc_abratio=cor(log_pesc,ABratio,method='spearman'))
+pesc_temp_corrs <- pesc_abratio_temp %>% 
+  select(knot,log_pesc,temp) %>% 
+  filter(!is.na(log_pesc),!is.na(temp)) %>% 
+  group_by(knot) %>% 
+  summarise(corr_pesc_temp=cor(log_pesc,temp,method='spearman'))
+abratio_temp_corrs <- pesc_abratio_temp %>% 
+  select(knot,ABratio,temp) %>% 
+  filter(!is.na(ABratio),!is.na(temp)) %>% 
+  group_by(knot) %>% 
+  summarise(corr_abratio_temp=cor(ABratio,temp,method='spearman'))
+
+ggplot(pesc_abratio_corrs,aes(corr_pesc_abratio))+
+  geom_density(fill='blue',alpha=0.5)
+
+pesc_abratio_temp %>% 
+  filter(ABratio>-5,ABratio<1) %>% 
+  sample_n(100000) %>% 
+  ggplot(aes(log_pesc,ABratio))+
+  geom_point()+
+  geom_smooth()
+```
+
+## Maps of PESC and AB Ratio
+
+```{r}
+sp_df <- pts %>% left_join(pesc_abratio_temp) %>% 
+  filter(year %in% c(2002,2010))
+  
+
+cols<-colorRampPalette(colors=c("darkblue","blue","lightblue","lightgreen","yellow","orange","red"))(50)
+
+pesc_map<-ggplot()+
+  geom_point(data=sp_df,aes(E_km,N_km,col=log_pesc),shape=".")+
+  scale_color_gradientn(colors=cols)+
+  facet_wrap(~year)+
+  labs(col="Log\nPESC",x="Eastings",y="Northings",title="Predator-Expanded Stomach Contents")+
+  geom_sf(data=ak,fill='gray50',col=NA)+
+  coord_sf(crs = st_crs(ak), datum = NA) +
+  xlim(lims[1],lims[3])+ylim(lims[2],lims[4])+
+  # scale_color_viridis()+
+  theme(axis.text = element_blank(),
+        panel.spacing.x = unit(0,"pt"),
+        panel.spacing.y=unit(0,"pt"))
+
+pesc_map
+ggsave(here::here('data','VAST output','plots','pesc_2002_2010.png'),pesc_map,w=8,h=4)
+
+abratio_map<-ggplot()+
+  geom_point(data=sp_df,aes(E_km,N_km,col=ABratio),shape=".")+
+  scale_color_gradientn(colors=cols,limits=c(-5,1))+
+  facet_wrap(~year)+
+  labs(col="A-B Ratio",x="Eastings",y="Northings",title="A-B Ratio")+
+  geom_sf(data=ak,fill='gray50',col=NA)+
+  coord_sf(crs = st_crs(ak), datum = NA) +
+  xlim(lims[1],lims[3])+ylim(lims[2],lims[4])+
+  # scale_color_viridis()+
+  theme(axis.text = element_blank(),
+        panel.spacing.x = unit(0,"pt"),
+        panel.spacing.y=unit(0,"pt"))
+
+abratio_map
+ggsave(here::here('data','VAST output','plots','abratio_2002_2010.png'),abratio_map,w=8,h=4)
+
+library(cowplot)
+combined_2002_2010 <- plot_grid(thermal_niche_overlap_map,pesc_map,abratio_map,nrow=3)
+combined_2002_2010
+ggsave(here::here('data','VAST output','plots','combined_pesc_temp_ab_map.png'),w=8,h=12)
+```
+
+## Interannual changes in temperature and A-B ratio/PESC
+
+```{r}
+names(pesc_abratio_temp)
+```
 

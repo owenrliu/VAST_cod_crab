@@ -7,6 +7,8 @@
 ## dat (Data that was originally passed to VAST)
 
 library(tidyverse)
+library(RANN)
+library(here)
 
 ## ggplot theme (just for aesthetic look)
 plot_theme <-   theme_minimal()+
@@ -21,9 +23,9 @@ plot_theme <-   theme_minimal()+
 theme_set(plot_theme)
 
 
-# load(here::here('data','VAST output',"Save.RData"))
-# Report <- Save$Report
-# dat <- Save$Data
+load(here::here('data','VAST output',"Save.RData"))
+Report <- Save$Report
+dat <- Save$Data
 
 # Estimated encounter probability by knot/category/year
 est <- Report$R1_gcy
