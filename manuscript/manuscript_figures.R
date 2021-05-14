@@ -40,15 +40,17 @@ ak <- read_sf(here('data','spatial','cb_2017_02_anrc_500k.shp')) %>%
   st_transform(26904)
           
 ## data for plotting
-fp = paste0(getwd(),'/vast/output/const_intercept/')
-load(paste0(fp,"derived_quantities.Rdata"))
-load(paste0(fp,"Extrapolation_List.Rdata"))
-load(paste0(fp,"Spatial_List.Rdata"))
+fp = paste0(getwd(),'/data/VAST output/')
+load(paste0(fp,"/plots/derived_quantities.Rdata"))
+Extrapolation_List <- read_rds(here::here('data','VAST output',"Extrapolation_List.rds"))
+Spatial_List <- read_rds(here::here('data','VAST output',"Spatial_List.rds"))
 load(paste0(fp,"Save.Rdata"))
 Report <- Save$Report
+dat <- Save$Data
 
-load('data/depth_interpolated.RData')
-load('data/nbt_interpolated.RData')
+nbt.interpolated <- read_rds(here::here('data','processed','nbt_interpolated.rds'))
+
+depth.interpolated <- read_rds(here::here('data','processed','depth_interpolated.rds'))
 
 find_temperature <- function(Spatial_List,dat) {
   # locations of knots from Spatial_List object
@@ -82,7 +84,7 @@ lims.bathy <- st_bbox(bering_bathy)
 #                            field="meantemp",
 #                            fun=mean)
 # mean_nbt_xy <- mean_nbt_rast %>% as.data.frame(xy=T)
-dat_i <- dat %>% select(lon,lat) %>% st_as_sf(coords=c('lon','lat'),crs=4326) %>% st_transform(26904) %>% st_coordinates() %>% 
+dat_i <- dat %>% select(Lon,Lat) %>% st_as_sf(coords=c('Lon','Lat'),crs=4326) %>% st_transform(26904) %>% st_coordinates() %>% 
   as.data.frame()
 
 bathy_samples <- ggplot()+  

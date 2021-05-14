@@ -37,7 +37,7 @@ theme_set(plot_theme)
 # Plot predicted density
 plot_density <- function(Region,Spatial_List, Report,Extrapolation_List,dat,fp,saveplots=TRUE) {
   
-  dens <- log(Report$D_gcy)
+  dens <- log(Report$D_gct)
   cols<-colorRampPalette(colors=c("darkblue","blue","lightblue","lightgreen","yellow","orange","red"))(50)
   
   pts <- Extrapolation_List$Data_Extrap[,c('Lon','Lat','Area_in_survey_km2')] %>% 

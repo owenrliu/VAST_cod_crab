@@ -72,22 +72,22 @@ pesc_grd_long <- tibble(log_pesc=as.numeric(Log_PESC_Extrapolation_grid_cells),y
 ## Compare with Correlation
 
 ```{r}
-x %<>% mutate(knot=row_number()) %>% 
-  pivot_longer(names_to='year',values_to = 'stomach_contents',1:31) %>% 
-  mutate(year=as.numeric(year))
-
-owen_yrs <- sort(unique(owen$Data$year))
-cat_names <- tools::toTitleCase(levels(owen$Data$spp))
-z <- purrr::map_df(1:length(owen_yrs),function(yr) {
-  y[,,yr] %>% as_tibble() %>% set_names(cat_names) %>% mutate(knot=row_number()) %>% mutate(year=owen_yrs[yr])
-})
-
-z %<>% filter(year %in% unique(x$year))
-
-combined_dat <- x %>% left_join(z,by = c("knot", "year"))
-glimpse(combined_dat)
-
-cor(combined_dat %>% select(stomach_contents:`Large Cod`))
+# x %<>% mutate(knot=row_number()) %>% 
+#   pivot_longer(names_to='year',values_to = 'stomach_contents',1:31) %>% 
+#   mutate(year=as.numeric(year))
+# 
+# owen_yrs <- sort(unique(owen$Data$year))
+# cat_names <- tools::toTitleCase(levels(owen$Data$spp))
+# z <- purrr::map_df(1:length(owen_yrs),function(yr) {
+#   y[,,yr] %>% as_tibble() %>% set_names(cat_names) %>% mutate(knot=row_number()) %>% mutate(year=owen_yrs[yr])
+# })
+# 
+# z %<>% filter(year %in% unique(x$year))
+# 
+# combined_dat <- x %>% left_join(z,by = c("knot", "year"))
+# glimpse(combined_dat)
+# 
+# cor(combined_dat %>% select(stomach_contents:`Large Cod`))
 ```
 
 
@@ -287,7 +287,7 @@ thermal_niche_overlap_map<-ggplot()+
   geom_point(data=sp_df,aes(E_km,N_km,col=niche_overlap),size=0.25)+
   scale_color_npg()+
   facet_wrap(~year)+
-  labs(title="",x="Eastings",y="Northings",col="Thermal Niche\nOverlap")+
+  labs(title="Thermal Niche Overlap",x="Eastings",y="Northings",col="Thermal Niche\nOverlap")+
   geom_sf(data=ak,fill='gray50',col=NA)+
   coord_sf(crs = st_crs(ak), datum = NA) +
   xlim(lims[1],lims[3])+ylim(lims[2],lims[4])+
@@ -336,7 +336,7 @@ Compare SDM to PESC output through time series
 
 ```{r}
 # Estimated encounter probability by knot/category/year
-est <- Report$R1_gcy
+est <- Report$R1_gct
 
 # Choose species to calculate joint occurence
 # Must be names of categories from original VAST data object
@@ -394,7 +394,7 @@ hurlbert_fn <- function(prey, pred, area) {
 areas <- Spatial_List$a_gl %>% as_tibble() %>% set_names("area") %>% mutate(knot=row_number())
 
 # Estimated abundances by knot/category/year
-dens <- Report$D_gcy
+dens <- Report$D_gct
 
 # Choose species to calculate joint occurence
 # Must be names of categories from original VAST data object
@@ -488,7 +488,7 @@ ABratio_ts
 pesc_knots_summ <- pesc_grd_long %>% 
   # calculate means by year
   group_by(year) %>% 
-  summarise(mean_pesc=mean(log_pesc,na.rm=T)) %>% 
+  summarise(mean_pesc=mean(log_pesc,na.rm=T),sd_pesc=sd(log_pesc,na.rm=T),upper=mean_pesc+sd_pesc,lower=mean_pesc-sd_pesc) %>% 
   ungroup() 
 
 # Plot time series of mean PESC across knots for each year
@@ -552,27 +552,28 @@ ggsave(here::here('data','VAST output','plots','abratio_vs_pesc.png'),combined_p
 
 Data taken from Szuwalski 2018.
 
+May 2021- need to re-do or remove this
 ```{r}
-assessyr <- str_split("1982 1983 1984 1985 1986 1987 1988 1989 1990 1991 1992 1993 1994 1995 1996 1997 1998 1999 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 2011 2012 2013 2014 2015 2016 2017"," ")[[1]] %>% as.numeric()
-assess_rec <- str_split("162.5 463.6 1087 4557 1517 842.9 373.6 942.3 891.8 1444 1484 1179 267.8 208.4 240.2 308.9 454 243.1 194.5 180.1 545.8 1326 536.7 527.1 206.8 257.8 2277 749.4 432.3 532.4 643 446.3 1225 2765 2847 600", " ")[[1]] %>% as.numeric()
-assess_recruitment <- tibble(year=assessyr,recruits=assess_rec)
-combined_df %<>%
-  left_join(assess_recruitment,by=c('year'))
-
-recruitment_plot <- combined_df %>% 
-  ggplot()+
-  geom_line(aes(year,recruits),col='blue')+
-  geom_point(aes(year,recruits),col='blue')+
-  # weird fudging to get the secondary axis to look right
-  geom_line(aes(year,pesc*4438/121900-500),col='seagreen')+
-  geom_pointrange(aes(year,pesc*4438/121900-500,ymax=upper*4438/121900-500,ymin=lower*4438/121900-500),col='seagreen')+
-  scale_y_continuous(limits=c(0,4800),sec.axis=sec_axis(~(.+500)*27.467,name="Total PESC"))+
-  scale_x_continuous(breaks=seq(1980,2020,by=5))+
-  labs(x="Year",y="Recruits (Millions)",title="Snow Crab Recruitment from Assessment vs.\nTotal PESC")+
-  theme(axis.text.x = element_text(angle=90),
-        axis.title.y.right = element_text(color='seagreen'))
-recruitment_plot
-ggsave(here::here('data','VAST output','plots','assessment_recruitment.png'),recruitment_plot,h=3,w=6)
+# assessyr <- str_split("1982 1983 1984 1985 1986 1987 1988 1989 1990 1991 1992 1993 1994 1995 1996 1997 1998 1999 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 2011 2012 2013 2014 2015 2016 2017"," ")[[1]] %>% as.numeric()
+# assess_rec <- str_split("162.5 463.6 1087 4557 1517 842.9 373.6 942.3 891.8 1444 1484 1179 267.8 208.4 240.2 308.9 454 243.1 194.5 180.1 545.8 1326 536.7 527.1 206.8 257.8 2277 749.4 432.3 532.4 643 446.3 1225 2765 2847 600", " ")[[1]] %>% as.numeric()
+# assess_recruitment <- tibble(year=assessyr,recruits=assess_rec)
+# combined_df %<>%
+#   left_join(assess_recruitment,by=c('year'))
+# 
+# recruitment_plot <- combined_df %>% 
+#   ggplot()+
+#   geom_line(aes(year,recruits),col='blue')+
+#   geom_point(aes(year,recruits),col='blue')+
+#   # weird fudging to get the secondary axis to look right
+#   geom_line(aes(year,mean_pesc*1000),col='seagreen')+
+#   geom_pointrange(aes(year,mean_pesc*1000,ymax=upper*1000,ymin=lower*1000),col='seagreen')+
+#   scale_y_continuous(limits=c(0,4800),sec.axis=sec_axis(~(./1000),name="Total PESC"))+
+#   scale_x_continuous(breaks=seq(1980,2020,by=5))+
+#   labs(x="Year",y="Recruits (Millions)",title="Snow Crab Recruitment from Assessment vs.\nTotal PESC")+
+#   theme(axis.text.x = element_text(angle=90),
+#         axis.title.y.right = element_text(color='seagreen'))
+# recruitment_plot
+# ggsave(here::here('data','VAST output','plots','assessment_recruitment.png'),recruitment_plot,h=3,w=6)
 ```
 
 

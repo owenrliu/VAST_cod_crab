@@ -306,7 +306,7 @@ TmbData = make_data("Version"=Version,
                     "a_i"=dat$area_km2, 
                     "v_i"=as.numeric(dat$vessel)-1, 
                     "s_i"=dat$knot_i-1, 
-                    "t_iz"=dat$year,
+                    "t_i"=dat$year,
                     "a_xl"=Spatial_List$a_xl,
                     "covariate_data"=covars,
                     "formula"= formula,
@@ -338,7 +338,8 @@ Obj$gr( Obj$par )
 
 # Optimize
 # Bias Correct?
-BiasCorr= TRUE
+# Changed Bias correct toF 5/12/21-- too much memory required
+BiasCorr= FALSE
 Opt = TMBhelper::fit_tmb( obj=Obj, lower=TmbList[["Lower"]], upper=TmbList[["Upper"]], savedir=fp, getsd=TRUE, 
                            bias.correct=BiasCorr, newtonsteps=1, 
                            bias.correct.control=list(sd=FALSE, split=NULL, nsplit=1, vars_to_correct=c("Index_cyl","effective_area_cyl","mean_Z_cym")))
@@ -353,6 +354,7 @@ if("opt" %in% names(Opt)) capture.output( Opt$opt, file=here::here('data','VAST 
 ## Explore Model Outputs
 
 ### Diagnostic plots
+Edit 05.13.21- this is not working.
 ```{r}
 # if not re-running, load
 load(here::here('data','VAST output',"Record.Rdata"))
@@ -366,7 +368,9 @@ names(dat) <- c("spp","Year","Lon","Lat","area_km2", "Catch_KG","vessel","knot_i
 source(here::here('data','scripts','output__helper_fxns.R'))
 # diagnostic plots
 # plot_data(Extrapolation_List=Extrapolation_List, Spatial_List=Spatial_List, Data_Geostat=dat, PlotDir=fp )
+```
 
+```{r}
 # convergence
 pander::pandoc.table(Save$Opt$diagnostics[,c('Param','Lower','MLE','Upper','final_gradient')] ) 
 
@@ -378,12 +382,11 @@ Enc_prob = plot_encounter_diagnostic( Report=Save$Report, Data_Geostat=dat, DirN
 # Check positive catch-rate
 #nWe can visualize fit to residuals of catch-rates given encounters using a Q-Q plot.  
 # A good Q-Q plot will have residuals along the one-to-one line.  
-
-Q = plot_quantile_diagnostic( TmbData=TmbData, Report=Report, FileName_PP="Posterior_Predictive",
-                              FileName_Phist="Posterior_Predictive-Histogram", 
-                              FileName_QQ="Q-Q_plot", FileName_Qhist="Q-Q_hist", DateFile=fp )
-
-save(Q,file=paste0(fp,"quantile_diag.Rdata"))
+# plot.new()
+# Q = plot_quantile_diagnostic(TmbData=TmbData, Report=Report, FileName_PP="Posterior_Predictive",FileName_Phist="Posterior_Predictive-Histogram",
+#                              FileName_QQ="Q-Q_plot", FileName_Qhist="Q-Q_hist", DateFile=fp )
+# 
+# save(Q,file=paste0(fp,"quantile_diag.Rdata"))
 
 ## Plotting residuals on a map
 # Get region-specific settings for plots
@@ -396,13 +399,13 @@ Years2Include = which( Year_Set %in% sort(unique(dat$Year)))
 # If there are visible patterns (areas with consistently positive or negative residuals accross or within years) 
 # then this is an indication of the model "overshrinking" results towards the intercept, and model results should then be treated with caution.  
 TmbData$n_x <- 300
-res <- plot_residuals(Lat_i=dat[,'Lat'], Lon_i=dat[,'Lon'], spatial_list=Spatial_List,TmbData=TmbData, Report=Save$Report, Q=Q, 
+res <- plot_quantile_residuals(Lat_i=dat[,'Lat'], Lon_i=dat[,'Lon'], spatial_list=Spatial_List,TmbData=TmbData, Report=Save$Report, Q=Q, 
                savdir=fp, extrapolation_list = Extrapolation_List, mar=c(0,0,2,0), oma=c(3.5,3.5,0,0), cex=1.8)
 
 ## Direction of "geometric anisotropy"
 
 # We can visualize which direction has faster or slower decorrelation (termed "geometric anisotropy")
-plot_anisotropy( FileName=paste0(fp,"Aniso.png"), Report=Report, TmbData=TmbData )
+plot_anisotropy( Obj= Obj, FileName=paste0(fp,"Aniso.png"), Report=Report, TmbData=TmbData )
 
 ```
 
@@ -410,6 +413,7 @@ plot_anisotropy( FileName=paste0(fp,"Aniso.png"), Report=Report, TmbData=TmbData
 
 ```{r}
 #### View Model Outputs ####
+source(here('data','scripts','output__helper_fxns.R'))
 
 ## Plot spatial and spatio-temporal covariance
 
@@ -446,11 +450,11 @@ range_index <- plot_range_index(Report=Report, TmbData=TmbData, Sdreport=SDr, Zn
 ## Plot factors
 # Finally, we can inspect the factor-decomposition for community-level patterns.  
 # This generates many plots
-factors <- Plot_factors( Report=Save$Report, ParHat=Save$ParHat, Data=TmbData, SD=SDr, mapdetails_list=MapDetails_List, 
+factors <- plot_factors(fit=Save, Report=Save$Report, ParHat=Save$ParHat, Data=TmbData, SD=SDr, mapdetails_list=MapDetails_List, 
                          Year_Set=Year_Set, category_names=levels(dat$spp), plotdir=fp )
 fct_loadings <- plot_fct_loadings(factors,dat,rotated = TRUE,fp)
 
-outs <- list(factors=factors,fct_loadings=fct_loadings,res=res,Index=Index,range_index=range_index)
+outs <- list(factors=factors,fct_loadings=fct_loadings,Index=Index,range_index=range_index)
 save(outs,file=paste0(fp,"derived_quantities.Rdata"))
 ```
 
